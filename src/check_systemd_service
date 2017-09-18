@@ -14,6 +14,11 @@ from datetime import datetime, timedelta
 def get_perfdata(label, value, warning, critical, minimum=0):
     return '%s=%ss;%s;%s;%s' % (label, value, warning, critical, minimum)
 
+def get_service_type(service):
+    output = subprocess.check_output(['systemctl', 'show', '-p', 'Type', service])
+    _, type_ = output.decode('utf-8').strip().split('=')
+    return type_
+
 def get_systemd_timestamp(service, name):
     output = subprocess.check_output(['systemctl', 'show', '-p', name, service])
     _, timestamp = output.decode('utf-8').strip().split('=')
@@ -142,17 +147,14 @@ def check_status_oneshot(service,
 def main():
     parser = argparse.ArgumentParser('Check systemd service status')
     parser.add_argument('--service', required=True)
-    subparsers = parser.add_subparsers(dest='subcommand')
-
-    oneshot = subparsers.add_parser('oneshot')
-    oneshot.add_argument('--exit-time-warning', type=int, default=0)
-    oneshot.add_argument('--exit-time-critical', type=int, default=0)
-    oneshot.add_argument('--running-time-warning', type=int, default=0)
-    oneshot.add_argument('--running-time-critical', type=int, default=0)
+    parser.add_argument('--exit-time-warning', type=int, default=0)
+    parser.add_argument('--exit-time-critical', type=int, default=0)
+    parser.add_argument('--running-time-warning', type=int, default=0)
+    parser.add_argument('--running-time-critical', type=int, default=0)
     args = parser.parse_args()
 
     try:
-        if args.subcommand == 'oneshot':
+        if get_service_type(args.service) == 'oneshot':
             retval, msg, perfdata = check_status_oneshot(args.service,
                                                          args.exit_time_warning,
                                                          args.exit_time_critical,
