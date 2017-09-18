@@ -11,50 +11,55 @@ import subprocess
 from datetime import datetime, timedelta
 
 
+class Service(object):
+    def __init__(self, service):
+        self.name = service
+        self._info = self._get_properties(service)
+
+    @staticmethod
+    def _get_properties(service):
+        info = {}
+        print('calling systemctl')
+        output = subprocess.check_output(['systemctl', 'show', service])
+
+        for line in output.decode('utf-8').split('\n'):
+            if not line.strip():
+                continue
+
+            key, value = line.split('=', 1)
+            info[key] = value
+
+        return info
+
+    def get_property(self, name):
+        value = self._info.get(name, None)
+
+        if value is None:
+            return None
+
+        if value and name.endswith('Timestamp'):
+            value = datetime.strptime(value, '%a %Y-%m-%d %H:%M:%S %Z')
+
+        return value
+
+    def is_enabled(self):
+        if self._info['UnitFilePreset'] == 'enabled':
+            return True
+        return False
+
+    def is_running(self):
+        if self._info['ActiveState'] in ['active', 'activating']:
+            return True
+        return False
+
+    def is_failed(self):
+        if self._info['ActiveState'] == 'failed':
+            return True
+        return False
+
+
 def get_perfdata(label, value, warning, critical, minimum=0):
     return '%s=%ss;%s;%s;%s' % (label, value, warning, critical, minimum)
-
-def get_service_type(service):
-    output = subprocess.check_output(['systemctl', 'show', '-p', 'Type', service])
-    _, type_ = output.decode('utf-8').strip().split('=')
-    return type_
-
-def get_systemd_timestamp(service, name):
-    output = subprocess.check_output(['systemctl', 'show', '-p', name, service])
-    _, timestamp = output.decode('utf-8').strip().split('=')
-    if timestamp:
-        return datetime.strptime(timestamp, '%a %Y-%m-%d %H:%M:%S %Z')
-    else:
-        return None
-
-def get_systemd_status(service, check):
-    try:
-        subprocess.check_call(['systemctl', '--quiet', check, service],
-                              stderr=subprocess.DEVNULL)
-    except subprocess.CalledProcessError as e:
-        return False
-    return True
-
-def get_active_timestamp(service):
-    return get_systemd_timestamp(service, 'ActiveEnterTimestamp')
-
-def get_inactive_timestamp(service):
-    return get_systemd_timestamp(service, 'ActiveExitTimestamp')
-
-def get_start_timestamp(service):
-    return get_systemd_timestamp(service, 'ExecMainStartTimestamp')
-
-def get_exit_timestamp(service):
-    return get_systemd_timestamp(service, 'ExecMainExitTimestamp')
-
-def is_enabled(service):
-    return get_systemd_status(service, 'is-enabled')
-
-def is_running(service):
-    return get_systemd_status(service, 'is-active')
-
-def is_failed(service):
-    return get_systemd_status(service, 'is-failed')
 
 def get_status_msg(retval):
     if retval == 0:
@@ -71,34 +76,36 @@ def get_status_msg(retval):
     return msg
 
 def check_status(service):
-    if not is_enabled(service):
-        msg = '%s is not enabled' % service
+    if not service.is_enabled():
+        msg = '%s is not enabled' % service.name
         return (2, msg, None)
 
-    if is_running(service):
-        msg = 'active since %s' % get_active_timestamp(service)
-        return (0, msg, None)
+    if service.is_running():
+        msg = 'active since %s' % service.get_property('ActiveEnterTimestamp')
+        retval = 0
     else:
-        msg = 'inactive since %s' % get_inactive_timestamp(service)
-        return (2, msg, None)
+        msg = 'inactive since %s' % service.get_property('ActiveExitTimestamp')
+        retval = 2
+
+    return (retval, msg, None)
 
 def check_status_oneshot(service,
                          exit_time_warning=0,
                          exit_time_critical=0,
                          running_time_warning=0,
                          running_time_critical=0):
-    if not is_enabled(service):
-        msg = '%s is not enabled' % service
+    if not service.is_enabled():
+        msg = '%s is not enabled' % service.name
         return (2, msg, None)
 
     perfdata = []
     exit_seconds = 0
     running_seconds = 0
     now = datetime.now()
-    start_timestamp = get_start_timestamp(service)
-    exit_timestamp = get_exit_timestamp(service)
+    start_timestamp = service.get_property('ExecMainStartTimestamp')
+    exit_timestamp = service.get_property('ExecMainExitTimestamp')
 
-    if start_timestamp and not exit_timestamp:
+    if service.is_running():
         msg = 'service has been running since %s' % start_timestamp
         running_seconds = int((now - start_timestamp).total_seconds())
 
@@ -114,7 +121,7 @@ def check_status_oneshot(service,
             retval = 1
         else:
             retval = 0
-    elif start_timestamp and exit_timestamp:
+    elif exit_timestamp:
         msg = 'service ran for %s' % (exit_timestamp - start_timestamp)
         exit_seconds = int((now - exit_timestamp).total_seconds())
 
@@ -124,7 +131,7 @@ def check_status_oneshot(service,
         if warning > critical:
             raise ValueError('Warning threshold is higher than critical threshold')
 
-        if is_failed(service):
+        if service.is_failed():
             msg = 'service failed at %s' % exit_timestamp
             retval = 2
         else:
@@ -138,9 +145,10 @@ def check_status_oneshot(service,
         msg = 'service has never run'
         retval = 2
 
-    perfdata.append(get_perfdata('running_time', running_seconds, running_time_warning, running_time_critical))
-    perfdata.append(get_perfdata('time_since_exit', exit_seconds, exit_time_warning, exit_time_critical))
-
+    perfdata.append(get_perfdata('running_time', running_seconds, running_time_warning,
+                                 running_time_critical))
+    perfdata.append(get_perfdata('time_since_exit', exit_seconds, exit_time_warning,
+                                 exit_time_critical))
     return (retval, msg, ' '.join(perfdata))
 
 
@@ -153,27 +161,29 @@ def main():
     parser.add_argument('--running-time-critical', type=int, default=0)
     args = parser.parse_args()
 
-    try:
-        if get_service_type(args.service) == 'oneshot':
-            retval, msg, perfdata = check_status_oneshot(args.service,
-                                                         args.exit_time_warning,
-                                                         args.exit_time_critical,
-                                                         args.running_time_warning,
-                                                         args.running_time_critical)
-        else:
-            retval, msg, perfdata = check_status(args.service)
+    service = Service(args.service)
 
-        status = get_status_msg(retval)
+    if service.get_property('Type') == 'oneshot':
+        retval, msg, perfdata = check_status_oneshot(service,
+                                                     args.exit_time_warning,
+                                                     args.exit_time_critical,
+                                                     args.running_time_warning,
+                                                     args.running_time_critical)
+    else:
+        retval, msg, perfdata = check_status(service)
 
-        if perfdata:
-            print('%s - %s | %s' % (status, msg, perfdata))
-        else:
-            print('%s - %s' % (status, msg))
+    status = get_status_msg(retval)
 
-        return retval
-    except Exception as e:
-        print('Error - %s' % str(e))
-        return 3
+    if perfdata:
+        print('%s - %s | %s' % (status, msg, perfdata))
+    else:
+        print('%s - %s' % (status, msg))
+
+    return retval
 
 if __name__ == '__main__':
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except Exception as e:
+        print('Error - %s' % str(e))
+        sys.exit(3)
