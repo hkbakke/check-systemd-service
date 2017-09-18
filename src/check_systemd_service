@@ -33,21 +33,28 @@ class Service(object):
         return info
 
     def get_property(self, name):
-        value = self._info.get(name, None)
-        return value
+        return self._info.get(name, None)
 
     def is_enabled(self):
-        if self._info['UnitFilePreset'] == 'enabled':
+        enabled_states = [
+            'enabled',
+            'enabled-runtime',
+            'static',
+            'indirect',
+            'generated',
+            'transient'
+        ]
+        if self.get_property('UnitFileState') in enabled_states:
             return True
         return False
 
     def is_running(self):
-        if self._info['ActiveState'] in ['active', 'activating']:
+        if self.get_property('ActiveState') in ['active', 'activating']:
             return True
         return False
 
     def is_failed(self):
-        if self._info['ActiveState'] == 'failed':
+        if self.get_property('ActiveState') == 'failed':
             return True
         return False
 
