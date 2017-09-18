@@ -1,0 +1,177 @@
+#!/usr/bin/env python3
+
+#
+# This plugin is designed as a nagios compatible check plugin to use with
+# Icinga 2 and others
+#
+
+import argparse
+import sys
+import subprocess
+from datetime import datetime, timedelta
+
+
+def get_perfdata(label, value, warning, critical, minimum=0):
+    return '%s=%ss;%s;%s;%s' % (label, value, warning, critical, minimum)
+
+def get_systemd_timestamp(service, name):
+    output = subprocess.check_output(['systemctl', 'show', '-p', name, service])
+    _, timestamp = output.decode('utf-8').strip().split('=')
+    if timestamp:
+        return datetime.strptime(timestamp, '%a %Y-%m-%d %H:%M:%S %Z')
+    else:
+        return None
+
+def get_systemd_status(service, check):
+    try:
+        subprocess.check_call(['systemctl', '--quiet', check, service],
+                              stderr=subprocess.DEVNULL)
+    except subprocess.CalledProcessError as e:
+        return False
+    return True
+
+def get_active_timestamp(service):
+    return get_systemd_timestamp(service, 'ActiveEnterTimestamp')
+
+def get_inactive_timestamp(service):
+    return get_systemd_timestamp(service, 'ActiveExitTimestamp')
+
+def get_start_timestamp(service):
+    return get_systemd_timestamp(service, 'ExecMainStartTimestamp')
+
+def get_exit_timestamp(service):
+    return get_systemd_timestamp(service, 'ExecMainExitTimestamp')
+
+def is_enabled(service):
+    return get_systemd_status(service, 'is-enabled')
+
+def is_running(service):
+    return get_systemd_status(service, 'is-active')
+
+def is_failed(service):
+    return get_systemd_status(service, 'is-failed')
+
+def get_status_msg(retval):
+    if retval == 0:
+        msg = 'OK'
+    elif retval == 1:
+        msg = 'Warning'
+    elif retval == 2:
+        msg = 'Critical'
+    elif retval == 3:
+        msg = 'Unknown'
+    else:
+        raise ValueError('Invalid retval %s' % retval)
+
+    return msg
+
+def check_status(service):
+    if not is_enabled(service):
+        msg = '%s is not enabled' % service
+        return (2, msg, None)
+
+    if is_running(service):
+        msg = 'active since %s' % get_active_timestamp(service)
+        return (0, msg, None)
+    else:
+        msg = 'inactive since %s' % get_inactive_timestamp(service)
+        return (2, msg, None)
+
+def check_status_oneshot(service,
+                         exit_time_warning=0,
+                         exit_time_critical=0,
+                         running_time_warning=0,
+                         running_time_critical=0):
+    if not is_enabled(service):
+        msg = '%s is not enabled' % service
+        return (2, msg, None)
+
+    perfdata = []
+    exit_seconds = 0
+    running_seconds = 0
+    now = datetime.now()
+    start_timestamp = get_start_timestamp(service)
+    exit_timestamp = get_exit_timestamp(service)
+
+    if start_timestamp and not exit_timestamp:
+        msg = 'service has been running since %s' % start_timestamp
+        running_seconds = int((now - start_timestamp).total_seconds())
+
+        warning = timedelta(seconds=running_time_warning)
+        critical = timedelta(seconds=running_time_critical)
+
+        if warning > critical:
+            raise ValueError('Warning threshold is higher than critical threshold')
+
+        if critical and start_timestamp < now - critical:
+            retval = 2
+        elif warning and start_timestamp < now - warning:
+            retval = 1
+        else:
+            retval = 0
+    elif start_timestamp and exit_timestamp:
+        msg = 'service ran for %s' % (exit_timestamp - start_timestamp)
+        exit_seconds = int((now - exit_timestamp).total_seconds())
+
+        warning = timedelta(seconds=exit_time_warning)
+        critical = timedelta(seconds=exit_time_critical)
+
+        if warning > critical:
+            raise ValueError('Warning threshold is higher than critical threshold')
+
+        if is_failed(service):
+            msg = 'service failed at %s' % exit_timestamp
+            retval = 2
+        else:
+            if critical and exit_timestamp < now - critical:
+                retval = 2
+            elif warning and exit_timestamp < now - warning:
+                retval = 1
+            else:
+                retval = 0
+    else:
+        msg = 'service has never run'
+        retval = 2
+
+    perfdata.append(get_perfdata('running_time', running_seconds, running_time_warning, running_time_critical))
+    perfdata.append(get_perfdata('time_since_exit', exit_seconds, exit_time_warning, exit_time_critical))
+
+    return (retval, msg, ' '.join(perfdata))
+
+
+def main():
+    parser = argparse.ArgumentParser('Check systemd service status')
+    parser.add_argument('--service', required=True)
+    subparsers = parser.add_subparsers(dest='subcommand')
+
+    oneshot = subparsers.add_parser('oneshot')
+    oneshot.add_argument('--exit-time-warning', type=int, default=0)
+    oneshot.add_argument('--exit-time-critical', type=int, default=0)
+    oneshot.add_argument('--running-time-warning', type=int, default=0)
+    oneshot.add_argument('--running-time-critical', type=int, default=0)
+    args = parser.parse_args()
+
+    try:
+        if args.subcommand == 'oneshot':
+            retval, msg, perfdata = check_status_oneshot(args.service,
+                                                         args.exit_time_warning,
+                                                         args.exit_time_critical,
+                                                         args.running_time_warning,
+                                                         args.running_time_critical)
+        else:
+            retval, msg, perfdata = check_status(args.service)
+
+        status = get_status_msg(retval)
+
+        if perfdata:
+            print('%s - %s | %s' % (status, msg, perfdata))
+        else:
+            print('%s - %s' % (status, msg))
+
+        return retval
+    except Exception as e:
+        print('Error - %s' % str(e))
+        return 3
+
+if __name__ == '__main__':
+    sys.exit(main())
