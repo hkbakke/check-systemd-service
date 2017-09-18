@@ -55,6 +55,6 @@ Host object usage examples:
     
     # Standard service example. Only oneshot services have warning and critical levels as normal
     # services are expected to run continuously.
-        vars.systemd_services["Salt Master"] = {
+    vars.systemd_services["Salt Master"] = {
         systemd_service = "salt-master"
     }    
