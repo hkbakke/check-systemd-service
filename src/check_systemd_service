@@ -19,7 +19,6 @@ class Service(object):
     @staticmethod
     def _get_properties(service):
         info = {}
-        print('calling systemctl')
         output = subprocess.check_output(['systemctl', 'show', service])
 
         for line in output.decode('utf-8').split('\n'):
@@ -27,19 +26,14 @@ class Service(object):
                 continue
 
             key, value = line.split('=', 1)
+            if value and key.endswith('Timestamp'):
+                value = datetime.strptime(value, '%a %Y-%m-%d %H:%M:%S %Z')
             info[key] = value
 
         return info
 
     def get_property(self, name):
         value = self._info.get(name, None)
-
-        if value is None:
-            return None
-
-        if value and name.endswith('Timestamp'):
-            value = datetime.strptime(value, '%a %Y-%m-%d %H:%M:%S %Z')
-
         return value
 
     def is_enabled(self):
