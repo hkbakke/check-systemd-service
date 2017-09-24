@@ -58,6 +58,10 @@ class Service(object):
             return True
         return False
 
+def get_boot_time():
+    output = subprocess.check_output(['cat', '/proc/uptime'])
+    s = float(output.decode('utf-8').split()[0])
+    return datetime.now() - timedelta(seconds=s)
 
 def get_perfdata(label, value, warning, critical, minimum=0):
     return '%s=%ss;%s;%s;%s' % (label, value, warning, critical, minimum)
@@ -109,7 +113,6 @@ def check_status_oneshot(service,
     if service.is_running():
         msg = 'service has been running since %s' % start_timestamp
         running_seconds = int((now - start_timestamp).total_seconds())
-
         warning = timedelta(seconds=running_time_warning)
         critical = timedelta(seconds=running_time_critical)
 
@@ -125,7 +128,6 @@ def check_status_oneshot(service,
     elif exit_timestamp:
         msg = 'service ran for %s' % (exit_timestamp - start_timestamp)
         exit_seconds = int((now - exit_timestamp).total_seconds())
-
         warning = timedelta(seconds=exit_time_warning)
         critical = timedelta(seconds=exit_time_critical)
 
@@ -143,8 +145,20 @@ def check_status_oneshot(service,
             else:
                 retval = 0
     else:
-        msg = 'service has never run'
-        retval = 2
+        msg = 'service has not run since boot'
+        boot_timestamp = get_boot_time()
+        warning = timedelta(seconds=exit_time_warning)
+        critical = timedelta(seconds=exit_time_critical)
+
+        if warning > critical:
+            raise ValueError('Warning threshold is higher than critical threshold')
+
+        if critical and boot_timestamp < now - critical:
+            retval = 2
+        elif warning and boot_timestamp < now - warning:
+            retval = 1
+        else:
+            retval = 0
 
     perfdata.append(get_perfdata('running_time', running_seconds, running_time_warning,
                                  running_time_critical))
