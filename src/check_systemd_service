@@ -158,7 +158,7 @@ def check_status_oneshot(service,
         elif warning and boot_timestamp < now - warning:
             retval = 1
         else:
-            retval = 0
+            retval = 3
 
     perfdata.append(get_perfdata('running_time', running_seconds, running_time_warning,
                                  running_time_critical))
